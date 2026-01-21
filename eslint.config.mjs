@@ -1,35 +1,62 @@
-// @ts-check
-import eslint from '@eslint/js';
-import eslintPluginPrettierRecommended from 'eslint-plugin-prettier/recommended';
-import globals from 'globals';
-import tseslint from 'typescript-eslint';
+import globals from "globals";
+import tsPlugin from "@typescript-eslint/eslint-plugin";
+import tsParser from "@typescript-eslint/parser";
 
-export default tseslint.config(
+export default [
   {
-    ignores: ['eslint.config.mjs'],
-  },
-  eslint.configs.recommended,
-  ...tseslint.configs.recommendedTypeChecked,
-  eslintPluginPrettierRecommended,
-  {
+    // All TypeScript/JS files except configs & lockfiles
+    files: ["**/*.{js,ts,tsx}", "!eslint.config.mjs", "!package.json", "!package-lock.json", "!tsconfig.json"],
+
     languageOptions: {
-      globals: {
-        ...globals.node,
-        ...globals.jest,
-      },
-      sourceType: 'commonjs',
+      parser: tsParser,
       parserOptions: {
-        projectService: true,
-        tsconfigRootDir: import.meta.dirname,
+        project: './tsconfig.json',
+        tsconfigRootDir: process.cwd(),
+        sourceType: 'module',
+      },
+      globals: globals.node,
+    },
+
+    plugins: {
+      '@typescript-eslint': tsPlugin,
+    },
+
+    rules: {
+      // TypeScript general rules
+      '@typescript-eslint/interface-name-prefix': 'off',
+      '@typescript-eslint/explicit-function-return-type': 'off',
+      '@typescript-eslint/explicit-module-boundary-types': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-vars': ['warn'],
+
+      // Unsafe types in infrastructure code (Zod, Prisma)
+      // '@typescript-eslint/no-unsafe-assignment': 'off',
+      // '@typescript-eslint/no-unsafe-member-access': 'off',
+      // '@typescript-eslint/no-unsafe-call': 'off',
+
+      // Node.js formatting / style
+      'indent': ['warn', 2, {
+        ignoredNodes: ['PropertyDefinition[decorators]', 'MethodDefinition[decorators]'],
+        SwitchCase: 1
+      }],
+      'quotes': ['warn', 'single'],
+      'semi': ['warn', 'always'],
+      'max-len': ['warn', { code: 160 }],
+      'no-multiple-empty-lines': ['warn', { max: 2 }],
+      'object-curly-spacing': ['warn', 'always'],
+      'keyword-spacing': ['warn', { after: true }],
+      'no-extra-semi': 'warn',
+      'no-mixed-spaces-and-tabs': 'warn',
+    },
+
+    settings: {
+      environment: {
+        node: true,
+        jest: true,
       },
     },
+
+    ignores: ['.eslintrc.js', 'eslint.config.mjs', "package.json", "pnpm-lock.yaml", "tsconfig.json"],
   },
-  {
-    rules: {
-      '@typescript-eslint/no-explicit-any': 'off',
-      '@typescript-eslint/no-floating-promises': 'warn',
-      '@typescript-eslint/no-unsafe-argument': 'warn',
-      "prettier/prettier": ["error", { endOfLine: "auto" }],
-    },
-  },
-);
+
+];
