@@ -1,16 +1,11 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-
-import { loadEnvConfig } from './config/env.config';
-import { AppLoggerModule } from './logger/logger.module';
+import { CoreModule } from './core/core.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [loadEnvConfig],
-    }),
-    AppLoggerModule,
+    CoreModule,
+    HealthModule
   ],
   controllers: [],
   providers: [],
