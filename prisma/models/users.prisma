@@ -3,6 +3,14 @@ model User {
   email      String   @unique
   password   String
   isVerified Boolean  @default(false)
+  isActive   Boolean  @default(true)
+
+  roles          UserRole[]
+  refreshTokens  RefreshToken[]
+
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
+
+  @@index([email])
+  @@index([isActive])
 }
