@@ -7,6 +7,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { RegisterDto, LoginDto } from './dto/auth.dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
 import { SessionDto } from './dto/auth-response.dto';
+import { MailService } from '../../mail/mail.service';
+import { VerificationToken } from '../../generated/prisma/client';
 
 @Injectable()
 export class AuthService {
@@ -14,17 +16,27 @@ export class AuthService {
   private readonly SALT_ROUNDS: number;
   private readonly ACCESS_TOKEN_EXPIRY: number;
   private readonly REFRESH_TOKEN_EXPIRY_MS: number;
+  private readonly VERIFICATION_TOKEN_EXPIRY_MS: number;
+  private readonly PASSWORD_RESET_EXPIRY_MS: number;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly mailService: MailService,
   ) {
     this.SALT_ROUNDS = this.configService.get<number>('BCRYPT_SALT_ROUNDS', { infer: true })!;
+
     const accessExpiryInMinutes = this.configService.get<number>('JWT_ACCESS_EXPIRY_MINUTES', { infer: true })!;
     this.ACCESS_TOKEN_EXPIRY = accessExpiryInMinutes * 60;
     const refreshDays = this.configService.get<number>('JWT_REFRESH_EXPIRY_DAYS', { infer: true })!;
     this.REFRESH_TOKEN_EXPIRY_MS = refreshDays * 24 * 60 * 60 * 1000;
+
+    const verificationHours = this.configService.get<number>('EMAIL_VERIFICATION_EXPIRY_HOURS', { infer: true }) || 24;
+    this.VERIFICATION_TOKEN_EXPIRY_MS = verificationHours * 60 * 60 * 1000;
+
+    const resetMinutes = this.configService.get<number>('PASSWORD_RESET_EXPIRY_MINUTES', { infer: true }) || 60;
+    this.PASSWORD_RESET_EXPIRY_MS = resetMinutes * 60 * 1000;
   }
 
   async register(dto: RegisterDto): Promise<{ user: any; tokens: { accessToken: string; refreshToken: string } }> {
@@ -63,7 +75,174 @@ export class AuthService {
       },
     });
 
+    await this.sendVerificationEmail(user.id, user.email);
+
     return this.buildAuthResponse(user, {});
+  }
+
+  async sendVerificationEmail(userId: string, email: string): Promise<void> {
+    // Invalidate any existing verification tokens for this user
+    await this.prisma.verificationToken.updateMany({
+      where: {
+        userId,
+        type: 'email_verification',
+        usedAt: null,
+      },
+      data: {
+        usedAt: new Date(), // Mark as used to prevent reuse
+      },
+    });
+
+    const token = this.generateSecureToken();
+    const hashedToken = await bcrypt.hash(token, 10);
+
+    await this.prisma.verificationToken.create({
+      data: {
+        token: hashedToken,
+        type: 'email_verification',
+        userId,
+        expiresAt: new Date(Date.now() + this.VERIFICATION_TOKEN_EXPIRY_MS),
+      },
+    });
+
+    await this.mailService.sendEmailVerification(email, token); // TODO - Add name
+  }
+
+  async verifyEmail(token: string): Promise<void> {
+    // Find all unused verification tokens
+    const tokens = await this.prisma.verificationToken.findMany({
+      where: {
+        type: 'email_verification',
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      include: { user: true },
+    });
+
+    // Check token against all of them (since we hash)
+    let matchedToken: (typeof tokens)[0] | null = null;
+    for (const dbToken of tokens) {
+      const isMatch = await bcrypt.compare(token, dbToken.token);
+      if (isMatch) {
+        matchedToken = dbToken;
+        break;
+      }
+    }
+
+    if (!matchedToken) {
+      throw new BadRequestException('Invalid or expired verification token');
+    }
+
+    // Mark token as used
+    await this.prisma.verificationToken.update({
+      where: { id: matchedToken.id },
+      data: { usedAt: new Date() },
+    });
+
+    // Mark user as verified
+    await this.prisma.user.update({
+      where: { id: matchedToken.userId },
+      data: { isVerified: true },
+    });
+
+    // Send welcome email
+    await this.mailService.sendWelcome(matchedToken.user.email); // TODO - Add name
+  }
+
+  async resendVerification(email: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+    if (!user) {
+      return; // Don't reveal if email exists
+    }
+
+    if (user.isVerified) {
+      throw new BadRequestException('Email is already verified');
+    }
+
+    await this.sendVerificationEmail(user.id, user.email);
+  }
+
+  async requestPasswordReset(email: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
+    if (!user) {
+      return; // Don't reveal if email exists
+    }
+
+    // Invalidate existing reset tokens
+    await this.prisma.verificationToken.updateMany({
+      where: {
+        userId: user.id,
+        type: 'password_reset',
+        usedAt: null,
+      },
+      data: {
+        usedAt: new Date(),
+      },
+    });
+
+    const token = this.generateSecureToken();
+    const hashedToken = await bcrypt.hash(token, 10);
+
+    await this.prisma.verificationToken.create({
+      data: {
+        token: hashedToken,
+        type: 'password_reset',
+        userId: user.id,
+        expiresAt: new Date(Date.now() + this.PASSWORD_RESET_EXPIRY_MS),
+      },
+    });
+
+    await this.mailService.sendPasswordReset(user.email, token); // TODO - Add name
+  }
+
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    // Find all unused reset tokens
+    const tokens = await this.prisma.verificationToken.findMany({
+      where: {
+        type: 'password_reset',
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      include: { user: true },
+    });
+
+    // Check token against all of them
+    let matchedToken: VerificationToken | null = null;
+    for (const dbToken of tokens) {
+      const isMatch = await bcrypt.compare(token, dbToken.token);
+      if (isMatch) {
+        matchedToken = dbToken;
+        break;
+      }
+    }
+    if (!matchedToken) {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, this.SALT_ROUNDS);
+
+    await this.prisma.$transaction([
+      this.prisma.verificationToken.update({
+        where: { id: matchedToken.id },
+        data: { usedAt: new Date() },
+      }),
+      this.prisma.user.update({
+        where: { id: matchedToken.userId },
+        data: { password: hashedPassword },
+      }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId: matchedToken.userId },
+        data: {
+          isRevoked: true,
+          revokedAt: new Date(),
+          revokedBy: 'password_reset',
+        },
+      }),
+    ]);
   }
 
   async login(
@@ -96,6 +275,10 @@ export class AuthService {
 
     if (!user.isActive) {
       throw new UnauthorizedException('Account is deactivated');
+    }
+
+    if (!user.isVerified) {
+      throw new UnauthorizedException('Please verify your email before logging in');
     }
 
     return this.buildAuthResponse(user, metadata);
@@ -341,12 +524,26 @@ export class AuthService {
     return randomBytes(64).toString('hex');
   }
 
+  private generateSecureToken(): string {
+    return randomBytes(32).toString('hex');
+  }
+
   private hashToken(token: string): string {
     return bcrypt.hashSync(token, 10);
   }
 
   async cleanupExpiredTokens(): Promise<number> {
     const result = await this.prisma.refreshToken.deleteMany({
+      where: {
+        expiresAt: { lt: new Date() },
+      },
+    });
+
+    return result.count;
+  }
+
+  async cleanupExpiredVerificationTokens(): Promise<number> {
+    const result = await this.prisma.verificationToken.deleteMany({
       where: {
         expiresAt: { lt: new Date() },
       },

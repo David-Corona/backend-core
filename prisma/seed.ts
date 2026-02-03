@@ -70,7 +70,7 @@ async function main() {
           data: {
             email: testUser.email,
             password: hashedPassword,
-            isVerified: false,
+            isVerified: true,
             isActive: true,
             roles: {
               create: [{ roleId: userRole!.id }],

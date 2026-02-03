@@ -6,13 +6,15 @@ import { UsersModule } from './modules/users/users.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { RolesGuard } from './modules/auth/guards/roles.guard';
+import { SchedulerModule } from './scheduler/scheduler.module';
 
 @Module({
   imports: [
     CoreModule,
     HealthModule,
     UsersModule,
-    AuthModule
+    AuthModule,
+    SchedulerModule
   ],
   controllers: [],
   providers: [

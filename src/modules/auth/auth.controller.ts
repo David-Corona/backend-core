@@ -5,6 +5,7 @@ import { RegisterDto, LoginDto } from './dto/auth.dto';
 import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { AuthResponseDto, SessionDto } from './dto/auth-response.dto';
+import { RequestPasswordResetDto, ResendVerificationDto, ResetPasswordDto, VerifyEmailDto } from './dto/verification.dto';
 
 
 interface UserPayload {
@@ -139,5 +140,37 @@ export class AuthController {
   @Get('me')
   async getMe(@CurrentUser() user: UserPayload) {
     return user;
+  }
+
+  @Public()
+  @Post('verify-email')
+  @HttpCode(HttpStatus.OK)
+  async verifyEmail(@Body() dto: VerifyEmailDto): Promise<{ message: string }> {
+    await this.authService.verifyEmail(dto.token);
+    return { message: 'Email verified successfully' };
+  }
+
+  @Public()
+  @Post('resend-verification')
+  @HttpCode(HttpStatus.OK)
+  async resendVerification(@Body() dto: ResendVerificationDto): Promise<{ message: string }> {
+    await this.authService.resendVerification(dto.email);
+    return { message: 'If the email exists, a verification link has been sent' };
+  }
+
+  @Public()
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  async requestPasswordReset(@Body() dto: RequestPasswordResetDto): Promise<{ message: string }> {
+    await this.authService.requestPasswordReset(dto.email);
+    return { message: 'If the email exists, a password reset link has been sent' };
+  }
+
+  @Public()
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  async resetPassword(@Body() dto: ResetPasswordDto): Promise<{ message: string }> {
+    await this.authService.resetPassword(dto.token, dto.newPassword);
+    return { message: 'Password reset successfully. Please log in with your new password.' };
   }
 }
