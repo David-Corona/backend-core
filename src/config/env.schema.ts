@@ -2,8 +2,8 @@ import { z } from 'zod';
 
 export const envSchema = z.object({
   // App info
-  APP_NAME: z.string().default('CoreApp'),
-  APP_URL: z.string().url().default('http://localhost:3000'),
+  APP_NAME: z.string().default('CoreStack'),
+  APP_URL: z.string().url().default('http://localhost:4200'),
   
   NODE_ENV: z.enum(['development', 'production']).default('development'),
   PORT: z.coerce.number().default(3000),
@@ -30,6 +30,9 @@ export const envSchema = z.object({
   // Email token expiry (optional)
   EMAIL_VERIFICATION_EXPIRY_HOURS: z.coerce.number().default(24),
   PASSWORD_RESET_EXPIRY_MINUTES: z.coerce.number().default(60),
+
+  // CORS
+  CORS_ORIGINS: z.string().default('http://localhost:4200'),
 });
 
 export type EnvVars = z.infer<typeof envSchema>;

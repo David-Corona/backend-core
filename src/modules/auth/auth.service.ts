@@ -1,18 +1,31 @@
-import { Injectable, UnauthorizedException, ConflictException, BadRequestException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
+import { PinoLogger } from 'nestjs-pino';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RegisterDto, LoginDto } from './dto/auth.dto';
 import { JwtPayload } from './interfaces/jwt-payload.interface';
 import { SessionDto } from './dto/auth-response.dto';
 import { MailService } from '../../mail/mail.service';
 import { VerificationToken } from '../../generated/prisma/client';
+import {
+  UserAlreadyExistsError,
+  DefaultRoleNotFoundError,
+  InvalidVerificationTokenError,
+  EmailAlreadyVerifiedError,
+  InvalidCredentialsError,
+  AccountDeactivatedException,
+  EmailNotVerifiedError,
+  TokenRefreshError,
+  SessionNotFoundError,
+  UserInactiveError,
+  UserNotFoundError,
+} from '../../common/exceptions/custom-errors';
 
 @Injectable()
 export class AuthService {
-
   private readonly SALT_ROUNDS: number;
   private readonly ACCESS_TOKEN_EXPIRY: number;
   private readonly REFRESH_TOKEN_EXPIRY_MS: number;
@@ -24,7 +37,9 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly mailService: MailService,
+    private readonly logger: PinoLogger,
   ) {
+    this.logger.setContext(AuthService.name);
     this.SALT_ROUNDS = this.configService.get<number>('BCRYPT_SALT_ROUNDS', { infer: true })!;
 
     const accessExpiryInMinutes = this.configService.get<number>('JWT_ACCESS_EXPIRY_MINUTES', { infer: true })!;
@@ -46,7 +61,7 @@ export class AuthService {
       where: { email: normalizedEmail },
     });
     if (existing) {
-      throw new ConflictException('Email already exists');
+      throw new UserAlreadyExistsError(`Email '${normalizedEmail}' is already registered`);
     }
 
     const hashedPassword = await bcrypt.hash(dto.password, this.SALT_ROUNDS);
@@ -55,7 +70,7 @@ export class AuthService {
       where: { name: 'user' },
     });
     if (!userRole) {
-      throw new BadRequestException('Default user role not found. Please run database seed.');
+      throw new DefaultRoleNotFoundError();
     }
 
     const user = await this.prisma.user.create({
@@ -75,7 +90,10 @@ export class AuthService {
       },
     });
 
-    await this.sendVerificationEmail(user.id, user.email);
+    await this.sendVerificationEmail(user.id, user.email).catch((err) => {
+      // Not throwing error. Registration succeeded, user can request new verification email
+      this.logger.error({ err }, 'Failed to send verification email');
+    });
 
     return this.buildAuthResponse(user, {});
   }
@@ -130,7 +148,12 @@ export class AuthService {
     }
 
     if (!matchedToken) {
-      throw new BadRequestException('Invalid or expired verification token');
+      throw new InvalidVerificationTokenError();
+    }
+
+    // Check if already verified
+    if (matchedToken.user.isVerified) {
+      throw new EmailAlreadyVerifiedError();
     }
 
     // Mark token as used
@@ -158,7 +181,7 @@ export class AuthService {
     }
 
     if (user.isVerified) {
-      throw new BadRequestException('Email is already verified');
+      throw new EmailAlreadyVerifiedError();
     }
 
     await this.sendVerificationEmail(user.id, user.email);
@@ -220,7 +243,7 @@ export class AuthService {
       }
     }
     if (!matchedToken) {
-      throw new BadRequestException('Invalid or expired reset token');
+      throw new InvalidVerificationTokenError('Invalid or expired password reset token');
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, this.SALT_ROUNDS);
@@ -265,20 +288,20 @@ export class AuthService {
       },
     });
     if (!user) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new InvalidCredentialsError();
     }
 
     const isPasswordValid = await bcrypt.compare(dto.password, user.password);
     if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new InvalidCredentialsError();
     }
 
     if (!user.isActive) {
-      throw new UnauthorizedException('Account is deactivated');
+      throw new AccountDeactivatedException();
     }
 
     if (!user.isVerified) {
-      throw new UnauthorizedException('Please verify your email before logging in');
+      throw new EmailNotVerifiedError('Please verify your email before logging in');
     }
 
     return this.buildAuthResponse(user, metadata);
@@ -309,13 +332,13 @@ export class AuthService {
       },
     });
     if (!storedToken) {
-      throw new UnauthorizedException('Invalid refresh token');
+      throw new TokenRefreshError('Invalid refresh token');
     }
     if (storedToken.isRevoked) {
-      throw new UnauthorizedException('Refresh token has been revoked');
+      throw new TokenRefreshError('Refresh token has been revoked');
     }
     if (new Date() > storedToken.expiresAt) {
-      throw new UnauthorizedException('Refresh token has expired');
+      throw new TokenRefreshError('Refresh token has expired');
     }
 
     // Revoke old token (token rotation)
@@ -380,7 +403,7 @@ export class AuthService {
       where: { token: hashedToken },
     });
     if (!currentToken) {
-      throw new UnauthorizedException('Invalid refresh token');
+      throw new TokenRefreshError('Invalid refresh token');
     }
 
     await this.prisma.refreshToken.updateMany({
@@ -437,7 +460,7 @@ export class AuthService {
       },
     });
     if (!session) {
-      throw new BadRequestException('Session not found');
+      throw new SessionNotFoundError();
     }
 
     await this.prisma.refreshToken.update({
@@ -463,8 +486,12 @@ export class AuthService {
       },
     });
 
-    if (!user || !user.isActive) {
-      throw new UnauthorizedException('User not found or inactive');
+    if (!user) {
+      throw new UserNotFoundError('User not found');
+    }
+
+    if (!user.isActive) {
+      throw new UserInactiveError();
     }
 
     return user;

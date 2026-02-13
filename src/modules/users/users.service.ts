@@ -1,9 +1,15 @@
-import { Injectable, ConflictException, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ListUsersDto } from './dto/list-users.dto';
+import {
+  UserAlreadyExistsError,
+  UserNotFoundError,
+  RoleNotFoundError,
+  DefaultRoleNotFoundError,
+} from '../../common/exceptions/custom-errors';
 
 @Injectable()
 export class UsersService {
@@ -66,7 +72,7 @@ export class UsersService {
     });
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new UserNotFoundError(`User with ID '${id}' not found`);
     }
 
     return user;
@@ -90,7 +96,7 @@ export class UsersService {
       where: { email: normalizedEmail },
     });
     if (existing) {
-      throw new ConflictException('Email already exists');
+      throw new UserAlreadyExistsError(`Email '${normalizedEmail}' is already registered`);
     }
 
     const hashedPassword = await bcrypt.hash(dto.password, this.SALT_ROUNDS);
@@ -105,7 +111,15 @@ export class UsersService {
       if (existingRoles.length !== roleNames.length) {
         const foundNames = existingRoles.map((r) => r.name);
         const missing = roleNames.filter((name) => !foundNames.includes(name));
-        throw new BadRequestException(`Roles not found: ${missing.join(', ')}`);
+        throw new RoleNotFoundError(`Roles not found: ${missing.join(', ')}`);
+      }
+    } else {
+      // Ensure default role exists
+      const defaultRole = await this.prisma.role.findUnique({
+        where: { name: 'user' },
+      });
+      if (!defaultRole) {
+        throw new DefaultRoleNotFoundError();
       }
     }
 
@@ -143,7 +157,7 @@ export class UsersService {
         where: { email: normalizedEmail },
       });
       if (existing && existing.id !== id) {
-        throw new ConflictException('Email already exists');
+        throw new UserAlreadyExistsError(`Email '${normalizedEmail}' is already registered`);
       }
     }
 
@@ -156,7 +170,7 @@ export class UsersService {
       if (existingRoles.length !== dto.roles.length) {
         const foundNames = existingRoles.map((r) => r.name);
         const missing = dto.roles.filter((name) => !foundNames.includes(name));
-        throw new BadRequestException(`Roles not found: ${missing.join(', ')}`);
+        throw new RoleNotFoundError(`Roles not found: ${missing.join(', ')}`);
       }
     }
 

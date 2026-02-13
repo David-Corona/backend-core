@@ -1,17 +1,17 @@
 import { Module } from '@nestjs/common';
-import { MailerModule } from '@nestjs-modules/mailer';
 import { ConfigService } from '@nestjs/config';
 import { MailService } from './mail.service';
-import { mailerConfig } from './mail.config';
+import { createResendClient } from './mail.config';
 
 @Module({
-  imports: [
-    MailerModule.forRootAsync({
+  providers: [
+    MailService,
+    {
+      provide: 'RESEND_CLIENT',
+      useFactory: (configService: ConfigService) => createResendClient(configService),
       inject: [ConfigService],
-      useFactory: mailerConfig,
-    }),
+    },
   ],
-  providers: [MailService],
   exports: [MailService],
 })
 export class MailModule {}

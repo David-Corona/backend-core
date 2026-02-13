@@ -16,6 +16,20 @@ async function bootstrap() {
 
   app.useLogger(app.get(Logger));
   app.use(cookieParser());
+
+  // Configure CORS
+  const corsOrigins = configService
+    .get<string>('CORS_ORIGINS', { infer: true })
+    ?.split(',')
+    .map((origin) => origin.trim()) || ['http://localhost:4200'];
+
+  app.enableCors({
+    origin: corsOrigins,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  });
+
   app.setGlobalPrefix('api');
   app.enableShutdownHooks();
 

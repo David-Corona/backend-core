@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, Delete, Param, HttpCode, HttpStatus, Req, Res, UnauthorizedException} from '@nestjs/common';
+import { Controller, Post, Body, Get, Delete, Param, HttpCode, HttpStatus, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { RegisterDto, LoginDto } from './dto/auth.dto';
@@ -6,6 +6,7 @@ import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { AuthResponseDto, SessionDto } from './dto/auth-response.dto';
 import { RequestPasswordResetDto, ResendVerificationDto, ResetPasswordDto, VerifyEmailDto } from './dto/verification.dto';
+import { TokenRefreshError } from '../../common/exceptions/custom-errors';
 
 
 interface UserPayload {
@@ -75,7 +76,7 @@ export class AuthController {
   async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<AuthResponseDto> {
     const refreshToken = req.cookies[this.REFRESH_TOKEN_COOKIE];
     if (!refreshToken) {
-      throw new UnauthorizedException('Refresh token not found');
+      throw new TokenRefreshError('Refresh token not found');
     }
 
     const metadata = {
@@ -118,7 +119,7 @@ export class AuthController {
   async logoutOthers(@CurrentUser() user: UserPayload, @Req() req: Request): Promise<void> {
     const refreshToken = req.cookies[this.REFRESH_TOKEN_COOKIE];
     if (!refreshToken) {
-      throw new UnauthorizedException('Refresh token not found');
+      throw new TokenRefreshError('Refresh token not found');
     }
 
     await this.authService.logoutOthers(user.id, refreshToken);
