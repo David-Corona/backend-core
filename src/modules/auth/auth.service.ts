@@ -111,7 +111,7 @@ export class AuthService {
       },
     });
 
-    const token = this.generateSecureToken();
+    const token = this.generateSecureToken(userId);
     const hashedToken = await bcrypt.hash(token, 10);
 
     await this.prisma.verificationToken.create({
@@ -127,49 +127,50 @@ export class AuthService {
   }
 
   async verifyEmail(token: string): Promise<void> {
-    // Find all unused verification tokens
-    const tokens = await this.prisma.verificationToken.findMany({
+    const parts = token.split('.');
+    if (parts.length !== 2) {
+      throw new InvalidVerificationTokenError();
+    }
+    const [userId, tokenValue] = parts;
+
+    const dbToken = await this.prisma.verificationToken.findFirst({
       where: {
+        userId,
         type: 'email_verification',
         usedAt: null,
         expiresAt: { gt: new Date() },
       },
       include: { user: true },
     });
-
-    // Check token against all of them (since we hash)
-    let matchedToken: (typeof tokens)[0] | null = null;
-    for (const dbToken of tokens) {
-      const isMatch = await bcrypt.compare(token, dbToken.token);
-      if (isMatch) {
-        matchedToken = dbToken;
-        break;
-      }
+    if (!dbToken) {
+      throw new InvalidVerificationTokenError();
     }
 
-    if (!matchedToken) {
+    // Check token
+    const isMatch = await bcrypt.compare(token, dbToken?.token);
+    if (!isMatch) {
       throw new InvalidVerificationTokenError();
     }
 
     // Check if already verified
-    if (matchedToken.user.isVerified) {
+    if (dbToken.user.isVerified) {
       throw new EmailAlreadyVerifiedError();
     }
 
-    // Mark token as used
-    await this.prisma.verificationToken.update({
-      where: { id: matchedToken.id },
-      data: { usedAt: new Date() },
-    });
-
-    // Mark user as verified
-    await this.prisma.user.update({
-      where: { id: matchedToken.userId },
-      data: { isVerified: true },
-    });
+    // Mark token as used and user as verified
+    await this.prisma.$transaction([
+      this.prisma.verificationToken.update({
+        where: { id: dbToken.id },
+        data: { usedAt: new Date() },
+      }),
+      this.prisma.user.update({
+        where: { id: dbToken.userId },
+        data: { isVerified: true },
+      }),
+    ]);
 
     // Send welcome email
-    await this.mailService.sendWelcome(matchedToken.user.email); // TODO - Add name
+    await this.mailService.sendWelcome(dbToken.user.email); // TODO - Add name
   }
 
   async resendVerification(email: string): Promise<void> {
@@ -207,7 +208,7 @@ export class AuthService {
       },
     });
 
-    const token = this.generateSecureToken();
+    const token = this.generateSecureToken(user.id);
     const hashedToken = await bcrypt.hash(token, 10);
 
     await this.prisma.verificationToken.create({
@@ -223,26 +224,27 @@ export class AuthService {
   }
 
   async resetPassword(token: string, newPassword: string): Promise<void> {
-    // Find all unused reset tokens
-    const tokens = await this.prisma.verificationToken.findMany({
+    const parts = token.split('.');
+    if (parts.length !== 2) {
+      throw new InvalidVerificationTokenError('Invalid or expired password reset token');
+    }
+    const [userId, tokenValue] = parts;
+
+    const dbToken = await this.prisma.verificationToken.findFirst({
       where: {
+        userId,
         type: 'password_reset',
         usedAt: null,
         expiresAt: { gt: new Date() },
       },
       include: { user: true },
     });
-
-    // Check token against all of them
-    let matchedToken: VerificationToken | null = null;
-    for (const dbToken of tokens) {
-      const isMatch = await bcrypt.compare(token, dbToken.token);
-      if (isMatch) {
-        matchedToken = dbToken;
-        break;
-      }
+    if (!dbToken) {
+      throw new InvalidVerificationTokenError('Invalid or expired password reset token');
     }
-    if (!matchedToken) {
+
+    const isMatch = await bcrypt.compare(token, dbToken.token);
+    if (!isMatch) {
       throw new InvalidVerificationTokenError('Invalid or expired password reset token');
     }
 
@@ -250,15 +252,15 @@ export class AuthService {
 
     await this.prisma.$transaction([
       this.prisma.verificationToken.update({
-        where: { id: matchedToken.id },
+        where: { id: dbToken.id },
         data: { usedAt: new Date() },
       }),
       this.prisma.user.update({
-        where: { id: matchedToken.userId },
+        where: { id: dbToken.userId },
         data: { password: hashedPassword },
       }),
       this.prisma.refreshToken.updateMany({
-        where: { userId: matchedToken.userId },
+        where: { userId: dbToken.userId },
         data: {
           isRevoked: true,
           revokedAt: new Date(),
@@ -287,12 +289,10 @@ export class AuthService {
         },
       },
     });
-    if (!user) {
-      throw new InvalidCredentialsError();
-    }
-
-    const isPasswordValid = await bcrypt.compare(dto.password, user.password);
-    if (!isPasswordValid) {
+    // Added dummy hash to prevent timing attacks when user is not found
+    const passwordToCheck = user?.password ?? '$2b$10$dummy.hash.that.will.never.match.anything';
+    const isPasswordValid = await bcrypt.compare(dto.password, passwordToCheck);
+    if (!user || !isPasswordValid) {
       throw new InvalidCredentialsError();
     }
 
@@ -319,44 +319,51 @@ export class AuthService {
   ): Promise<{ user: any; tokens: { accessToken: string; refreshToken: string } }> {
     const hashedToken = this.hashToken(refreshToken);
 
-    const storedToken = await this.prisma.refreshToken.findUnique({
-      where: { token: hashedToken },
-      include: {
-        user: {
-          include: {
-            roles: {
-              include: { role: true },
+    // Use transaction to prevent race conditions
+    const result = await this.prisma.$transaction(async (tx) => {
+      const storedToken = await tx.refreshToken.findUnique({
+        where: { token: hashedToken },
+        include: {
+          user: {
+            include: {
+              roles: {
+                include: { role: true },
+              },
             },
           },
         },
-      },
-    });
-    if (!storedToken) {
-      throw new TokenRefreshError('Invalid refresh token');
-    }
-    if (storedToken.isRevoked) {
-      throw new TokenRefreshError('Refresh token has been revoked');
-    }
-    if (new Date() > storedToken.expiresAt) {
-      throw new TokenRefreshError('Refresh token has expired');
-    }
+      });
 
-    // Revoke old token (token rotation)
-    await this.prisma.refreshToken.update({
-      where: { id: storedToken.id },
-      data: {
-        isRevoked: true,
-        revokedAt: new Date(),
-        revokedBy: 'token_rotation',
-      },
-    });
+      if (!storedToken) {
+        throw new TokenRefreshError('Invalid refresh token');
+      }
+      if (storedToken.isRevoked) {
+        throw new TokenRefreshError('Refresh token has been revoked');
+      }
+      if (new Date() > storedToken.expiresAt) {
+        throw new TokenRefreshError('Refresh token has expired');
+      }
 
+      // Revoke old token (token rotation)
+      await tx.refreshToken.update({
+        where: { id: storedToken.id },
+        data: {
+          isRevoked: true,
+          revokedAt: new Date(),
+          revokedBy: 'token_rotation',
+        },
+      });
+
+      // Return user data to create new tokens
+      return storedToken;
+    });
+    
     // Create new tokens with same device info
-    return this.buildAuthResponse(storedToken.user, {
-      userAgent: metadata.userAgent || storedToken.userAgent,
-      ipAddress: metadata.ipAddress || storedToken.ipAddress,
-      deviceId: storedToken.deviceId || undefined,
-      deviceName: storedToken.deviceName || undefined,
+    return this.buildAuthResponse(result.user, {
+      userAgent: metadata.userAgent || result.userAgent,
+      ipAddress: metadata.ipAddress || result.ipAddress,
+      deviceId: result.deviceId || undefined,
+      deviceName: result.deviceName || undefined,
     });
   }
 
@@ -551,8 +558,9 @@ export class AuthService {
     return randomBytes(64).toString('hex');
   }
 
-  private generateSecureToken(): string {
-    return randomBytes(32).toString('hex');
+  private generateSecureToken(userId: string): string {
+    const random = randomBytes(32).toString('hex');
+    return `${userId}.${random}`
   }
 
   private hashToken(token: string): string {
